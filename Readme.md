@@ -1,0 +1,1 @@
+This is the code for a word prediction app located at https://gjanesch.shinyapps.io/WordPredictionApp

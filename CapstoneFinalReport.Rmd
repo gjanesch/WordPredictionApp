@@ -1,0 +1,116 @@
+---
+title: "Data Science Capstone - Final Report"
+author: "Greg Janesch"
+date: "April 26, 2015"
+output: html_document
+---
+
+This report summarizes the progress made regarding a word prediction app, completed as part of the Capstone project for Coursera's Data Science specialization.  Specifically, it details the preprocessing performed on the documents, some exploratory analyses of the training data, and the development of the app
+
+This project was done as a requirement for the completion of Coursera's Data Science specialization.
+
+## Introduction to the Problem
+
+The goal of this project is to develop a simple word prediction app.  The app will take an input of a few words, and will attempt to predict the next word, based on a training <i>corpus</i> (collection of texts) supplied by Swiftkey, which includes samples of text from blogs, news sites, and Twitter.  The final app will be deployed on the Shinyapps servers, and will be written, consequently, in R.  The initial dataset is located <a href="https://d396qusza40orc.cloudfront.net/dsscapstone/dataset/Coursera-SwiftKey.zip">here</a> and contains corpuses in English, Russian, German, and Finnish.  This project uses the English corpus only.
+
+In order to predict the next word, this project operates using <a href="http://en.wikipedia.org/wiki/N-gram"><i>n</i>-grams</a>, which are specific sequences of items - in this case, words - where the first <i>n</i>-1 items are used to predict final item.  The previous items provide some context, which allows the algorithm to guess the next item.  (For unigrams, it predicts the next item based purely on the frequency of individual items in the data, with no regard to context.)  In this project, 1-grams, 2-grams, 3-grams, and 4-grams - referred to as unigrams, bigrams, trigrams, and tetragrams respectively - will be used.
+
+
+## Initial Examination
+
+The first step was to read in the three files (one for Twitter, one for news, one for blogs) and ensure that they were not corrupted.  Reading the data in with the <TT>readLines()</TT> function was successful, and some very cursory examination was performed:
+
+| File              |   Number of Lines |   Size (Mb) | Avg. Characters/Line   | Range of Characters/Line |
+| ----------------- | ----------------: | ----------: | ---------------------: | -----------------------: |
+| en_US.blogs.txt   |     899,288       | 210.2       | 230                    | 1 to 40,833              |
+| en_US.news.txt    |   1,010,242       | 205.8       | 201                    | 1 to 11,384              |
+| en_US.twitter.txt |   2,360,148       | 167.1       | 69                     | 2 to 140                 |
+
+This yielded nearly 4.3 million lines of text (before being split into sentences), totaling roughly 900Mb in hard drive space.
+
+Of course, the above doesn't explicitly tell us about the number of words that we are dealing with.  To get a ballpark for those values, we can split the lines on every space using <TT>strsplit()</TT> to find the number of words for each line and take various quantiles of that. (Since <TT>strsplit()</TT> just splits the character object, some of the "words" here are actually numbers or emoticons or something else, and would be filtered out at the end; thus, the estimates we provide here will be on the high side.)
+
+So the quantiles for the number of words found for each file are:
+
+| File              |  Min |   1% |   5% |   25% |   50% |   75% |   95% |   99% |   Max  |   Total Words |
+| ----------------- | ---: | ---: | ---: | ----: | ----: | ----: | ----: | ----: | -----: | ------------: |
+| en_US.blogs.txt   | 1    |  1   |  3   | 9     | 28    | 59    | 125   | 200   | 6630   | 37,334,131  |
+| en_US.news.txt    | 1    |  2   |  5   | 19    | 32    | 45    | 73    | 106   | 1792   | 34,372,530  |
+| en_US.twitter.txt | 1    |  2   |  5   | 7     | 12    | 18    | 25    | 28    | 47     | 30,373,543  |
+
+
+The Twitter data maintains the lowest number of words per excerpt (unsurprising giving its character limit).  However, the larger volume of lines from the Twitter data means that the other two sources won't obscure it much.  In addition, while the range of words per excerpt in the blog and news texts is very large, many of those cases are outliers; the typical excerpt consists of a few sentences' worth of text.
+
+## Preprocessing
+
+The first bit of preprocessing to perform was to split the lines into individual sentences; were this not done, we would end up with n-grams formed from spanning words, which don't generally conform to normal English.  While R does have the facilities to do this via the <TT><b>openNLP</b></TT> package, it was determined that this step would be performed in Python (with its' <TT><b>nltk</b></TT> library), as it appeared to have better documentation and did not need to read the entire file into memory at once.
+
+```{r engine='python', eval=FALSE}
+from nltk.tokenize import sent_tokenize
+
+filenames = ["news", "blogs", "twitter"]
+
+for name in filenames:
+
+    # Create the names of the files
+    fileToOpen = "en_US." + name + ".txt"
+    fileToWrite = "sentences_" + name + ".txt"
+
+    # Divide each line of each file into sentences, and write each sentence
+    # to a new file as a separate line
+    with open(fileToOpen, "r") as file:
+        with open(fileToWrite, "w") as target:
+            for line in file:
+                sentences = sent_tokenize(line)
+                for sent in sentences:
+                    if not sent.endswith("\n"):
+                        sent = sent + "\n"
+                    target.write(sent)
+
+```
+
+At this point, the three sentence-divided files were then read into R and processed by the <TT>unigramGenerator_v4()</TT> function.  For each of the files, the function ran the sentence vector through another function to sanitize the sentences and break them into words.  It then wrote the full unigram vector to one file (unigrams.txt), and then tabulated the entries of the vector and wrote that table to another file (unigram_table.txt).
+
+## The Dictionary
+
+In R, integer values consume significantly less memory than character values.  Because the final result should be memory-light when deployed, the intent is to substitute the words for integers and use a dictionary for lookup.
+
+So we want a data frame which has two columns: one for each word and one for a corresponding index.  The unigram_table.txt file is actually usable here; however, if we examine the unigram_table, it's clear that there are a great many unigrams with extremely low frequency.
+
+```{r}
+unigram_table <- read.table("unigram_table.txt")
+quantile(unigram_table$Freq, probs = seq(0,1,0.05))
+```
+
+Since this is a relatively simple app, we're simply going to ignore all unigrams below a certain frequency.  A limit of at least 100 instances was eventually settled on, and the remaining terms were written to dictionary.txt.  The number of terms in the dictionary can be found easily without reading into R:
+```{r}
+system("wc -l dictionary.txt")
+```
+(The actual dictionary size is one less, as the header is counted as a row here.)  Instances of the removed unigrams are given the dummy string "\<b\>" so that the longer n-grams do not include them.
+
+## Generating & Tabulating the N-grams
+
+Generating the n-grams was done with the ngramGenerator_v4() function.  It does so by:
+1. Reading in the full unigrams.txt file, with each word as an element in a long vector.
+2. The locations where valid bigrams start are recorded, and the bigrams are created and written to their respective files.
+3. The process was then repeated on the trigrams and tetragrams.  However, since the memory needed for these exeeded the memory available, these were written in chunks of 500,000 phrases at a time.
+
+Since the output sizes of the bigram, trigram, and tetragram files were too large to be read into memory on the computer directly, a workaround was devised: use awk scripts to split up the files. Since the dictionary size is just under 30,000, grouping the files by int($1/2000) - in other words, the floor of the first word's index divided by 2000 - creates 15 files for each of the n-gram files.
+
+```{r engine='awk', eval=FALSE}
+awk '{filenum = int($1/2000); print >> ("bigrams_"filenum".txt")}' bigrams.txt
+awk '{filenum = int($1/2000); print >> ("trigrams_"filenum".txt")}' trigrams.txt
+awk '{filenum = int($1/2000); print >> ("tetragrams_"filenum".txt")}' tetragrams.txt
+```
+
+The 45 individual files were then separately tabulated, using the functions in <TT>tabulation.R</TT>. In order to save additional space, only the n-gram for any combination of n-1 terms was kept.  In addition, all trigrams and tetragrams of frequency 1 were removed.  This eliminated the majority of n-grams, and brought the sizes down to something manageable by the Shiny servers.
+
+The 15 files for each of the n-gram sizes were then recombined using the <TT>cat</TT> command from the Terminal, and then resaved as RDS files in order to keep the hard disk space down even more.
+
+
+## The App
+The app itself is written in Shiny, and located <a href="https://gjanesch.shinyapps.io/WordPredictionApp">here</a>.  The app is a relatively simple implementation of the concept, taking some text as an input.  It attempts to match the last three words of the input to the first three words of any of the tetragrams; if this isn't possible, it attempts to repeat a similar process with the trigrams, then the bigrams.  If no match at all is discovered, the app responds with the most common word in the sample texts ("the").
+
+
+## Conclusion
+As it is a fairly simple app, it is fast, reutrning results in under one second.  However, the accuracy is quite low - predicted to be around 12-14 percent.  Future updates to the algorithm are possible - the field of natural language processing, particularly with respect to word prediction, is well-established.
